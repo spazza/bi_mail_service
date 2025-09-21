@@ -1,5 +1,7 @@
 """Module to send emails with attachments using SMTP."""
 
+from __future__ import annotations
+
 import configparser
 import mimetypes
 import re
@@ -13,13 +15,15 @@ from app.logger import get_logger
 logger = get_logger()
 
 
-def send_mail(report_type: str, subject: str) -> None:
+def send_mail(report_type: str, subject: str, date: datetime | None = None) -> None:
     """Send an email with the report as an attachment.
 
     :param report_type: Type of report to send
     :type report_type: str
     :param subject: Subject of the email
     :type subject: str
+    :param date: Date of the report to send, defaults to None
+    :type date: datetime | None, optional
     """
     config = configparser.ConfigParser()
     config.read("config.ini")
@@ -40,8 +44,8 @@ def send_mail(report_type: str, subject: str) -> None:
     msg["Subject"] = subject
 
     _add_content(msg, report_type_path)
-    _add_image(msg, report_type_path)
-    _add_pdf(msg, report_type_path)
+    _add_image(msg, report_type_path, date)
+    _add_pdf(msg, report_type_path, date)
 
     with smtplib.SMTP(smtp_server, smtp_port) as server:
         server.starttls()
@@ -60,9 +64,9 @@ def _get_recipients(report_type_path: str) -> list[str]:
     return []
 
 
-def _add_image(msg: EmailMessage, report_type_path: str) -> None:
+def _add_image(msg: EmailMessage, report_type_path: str, date: datetime | None) -> None:
     image_path = Path.cwd() / report_type_path / "image"
-    image_file = _get_daily_file(image_path)
+    image_file = _get_file(image_path, date)
 
     with Path.open(image_file, "rb") as img:
         img_data = img.read()
@@ -76,9 +80,9 @@ def _add_image(msg: EmailMessage, report_type_path: str) -> None:
     raise ValueError(msg)
 
 
-def _add_pdf(msg: EmailMessage, report_type_path: str) -> None:
+def _add_pdf(msg: EmailMessage, report_type_path: str, date: datetime | None) -> None:
     pdf_path = Path.cwd() / report_type_path / "pdf"
-    pdf_file = _get_daily_file(pdf_path)
+    pdf_file = _get_file(pdf_path, date)
 
     file = Path(pdf_file)
     mime_type, _ = mimetypes.guess_type(file)
@@ -107,8 +111,10 @@ def _add_content(msg: EmailMessage, report_type_path: str) -> None:
     logger.error("HTML content file not found. Please check the path.")
 
 
-def _get_daily_file(path: str) -> str:
-    now = datetime.now(tz=timezone.utc)
+def _get_file(path: str, date: datetime | None) -> str:
+    if date is None:
+        date = datetime.now(tz=timezone.utc)
+
     files = [f for f in Path(path).iterdir() if f.is_file()]
 
     for file in files:
@@ -117,7 +123,7 @@ def _get_daily_file(path: str) -> str:
             file_date = datetime.strptime(match.group(1), "%Y-%m-%d").replace(
                 tzinfo=timezone.utc
             )
-            if file_date.date() == now.date():
+            if file_date.date() == date.date():
                 logger.info("Found file for today: %s", file)
                 return file
     return None
