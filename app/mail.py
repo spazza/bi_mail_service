@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import configparser
-import mimetypes
 import re
-import smtplib
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from pathlib import Path
 
+from app.graph_api import GraphAPIClient
 from app.logger import get_logger
 
 logger = get_logger()
@@ -28,87 +27,91 @@ def send_mail(report_type: str, subject: str, date: datetime | None = None) -> N
     config = configparser.ConfigParser()
     config.read("config.ini")
 
-    smtp_server = "smtp.office365.com"
-    smtp_port = 587
-    sender_email = config.get("Email", "username")
-    password = config.get("Email", "password")
-    local_path = config["SharePoint"]["local_path"]
+    local_path = config["Generic"]["local_path"]
+    microsoft_config = config["Microsoft"]
+    sender = config["Email"]["username"]
 
     report_type_path = Path(local_path) / report_type.lower().replace(" ", "_")
 
-    recipients = _get_recipients(report_type_path)
+    email = _create_message(report_type_path, subject, date)
 
-    msg = EmailMessage()
-    msg["From"] = sender_email
-    msg["To"] = ", ".join(recipients)
-    msg["Subject"] = subject
+    microsoft_client = GraphAPIClient.from_config(microsoft_config)
+    microsoft_client.send_email(email, sender)
 
-    _add_content(msg, report_type_path)
-    _add_image(msg, report_type_path, date)
-    _add_pdf(msg, report_type_path, date)
 
-    with smtplib.SMTP(smtp_server, smtp_port) as server:
-        server.starttls()
-        server.login(sender_email, password)
-        server.send_message(msg)
-        logger.info("Email sent successfully")
+def _create_message(report_type_path: str, subject: str, date: datetime) -> dict:
+    return {
+        "message": {
+            "subject": subject,
+            "toRecipients": _get_recipients(report_type_path),
+            "body": {"contentType": "HTML", "content": _get_body(report_type_path)},
+            "attachments": [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": "report.pdf",
+                    "contentType": "application/pdf",
+                    "contentBytes": _get_pdf(report_type_path, date),
+                },
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": "report.png",
+                    "contentType": "image/png",
+                    "contentBytes": _get_image(report_type_path, date),
+                    "isInline": True,
+                    "contentId": "inline_image",
+                },
+            ],
+        },
+        "saveToSentItems": "true",
+    }
 
 
 def _get_recipients(report_type_path: str) -> list[str]:
     recipients_path = Path.cwd() / report_type_path / "recipients.txt"
 
     with Path.open(recipients_path) as f:
-        return [line.strip() for line in f if line.strip()]
+        raw_recipients = [line.strip() for line in f if line.strip()]
+        if raw_recipients:
+            return [{"emailAddress": {"address": email}} for email in raw_recipients]
 
-    logger.warning("No recipients found in emails.txt. Please check the file.")
+    logger.warning("No recipients found in recipients.txt. Please check the file.")
     return []
 
 
-def _add_image(msg: EmailMessage, report_type_path: str, date: datetime | None) -> None:
+def _get_body(report_type_path: str) -> str | None:
+    html_content_path = Path.cwd() / report_type_path / "body.html"
+
+    with Path.open(html_content_path) as f:
+        return f.read()
+
+    logger.error("HTML content file not found. Please check the path.")
+    return None
+
+
+def _get_image(report_type_path: str, date: datetime | None) -> str:
     image_path = Path.cwd() / report_type_path / "image"
     image_file = _get_file(image_path, date)
 
-    with Path.open(image_file, "rb") as img:
-        img_data = img.read()
-        maintype, subtype = mimetypes.guess_type(image_file)[0].split("/")
-        msg.get_payload()[1].add_related(
-            img_data, maintype=maintype, subtype=subtype, cid="inline_image"
-        )
-        return
+    with Path.open(image_file, "rb") as f:
+        image_data = f.read()
+
+        return base64.b64encode(image_data).decode("utf-8")
 
     msg = "Image path is not set. Please provide a valid image path."
     raise ValueError(msg)
 
 
-def _add_pdf(msg: EmailMessage, report_type_path: str, date: datetime | None) -> None:
+def _get_pdf(report_type_path: str, date: datetime | None) -> str:
     pdf_path = Path.cwd() / report_type_path / "pdf"
     pdf_file = _get_file(pdf_path, date)
 
-    file = Path(pdf_file)
-    mime_type, _ = mimetypes.guess_type(file)
-    maintype, subtype = mime_type.split("/")
+    with Path.open(pdf_file, "rb") as f:
+        pdf_data = f.read()
 
-    with Path.open(file, "rb") as f:
-        msg.add_attachment(
-            f.read(), maintype=maintype, subtype=subtype, filename=file.name
-        )
-        return
+        return base64.b64encode(pdf_data).decode("utf-8")
 
     msg = "PDF path is not set. Please provide a valid PDF path."
     raise ValueError(msg)
-
-
-def _add_content(msg: EmailMessage, report_type_path: str) -> None:
-    html_content_path = Path.cwd() / report_type_path / "body.html"
-
-    with Path.open(html_content_path) as f:
-        html_body = f.read()
-
-        msg.set_content("Report Content")
-        msg.add_alternative(html_body, subtype="html")
-        return
-
-    logger.error("HTML content file not found. Please check the path.")
 
 
 def _get_file(path: str, date: datetime | None) -> str:

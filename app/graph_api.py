@@ -11,11 +11,15 @@ from app.logger import get_logger
 logger = get_logger()
 
 
-class SharePointClient:
-    """Client to interact with SharePoint for downloading and uploading files."""
+class GraphAPIClient:
+    """Client to interact with Microsoft Graph API.
+
+    The utility allows to download and upload files from Microsoft Sharepoint and to
+    send emails.
+    """
 
     class Constants:
-        """Constant values for SharePointClient."""
+        """Constant values for GraphAPIClient."""
 
         authority_url = "https://login.microsoftonline.com/"
         scope = "https://graph.microsoft.com/.default"
@@ -26,10 +30,9 @@ class SharePointClient:
         tenant_id: str,
         client_id: str,
         client_secret: str,
-        sharepoint_host: str,
-        site_name: str,
+        microsoft_host: str,
     ) -> None:
-        """Initialize the SharePoint client.
+        """Initialize the GraphAPIClient.
 
         :param tenant_id: Azure AD tenant ID
         :type tenant_id: str
@@ -37,36 +40,32 @@ class SharePointClient:
         :type client_id: str
         :param client_secret: Azure AD client secret
         :type client_secret: str
-        :param sharepoint_host: SharePoint host URL (e.g., 'yourdomain.sharepoint.com')
-        :type sharepoint_host: str
-        :param site_name: SharePoint site name
-        :type site_name: str
+        :param microsoft_host: Microsoft host URL (e.g., 'yourdomain.sharepoint.com')
+        :type microsoft_host: str
         """
         self.tenant_id = tenant_id
         self.client_id = client_id
         self.client_secret = client_secret
-        self.sharepoint_host = sharepoint_host
-        self.site_name = site_name
+        self.microsoft_host = microsoft_host
 
     @classmethod
-    def from_config(cls, config: dict) -> "SharePointClient":
-        """Create a SharePointClient instance from a configuration dictionary.
+    def from_config(cls, config: dict) -> "GraphAPIClient":
+        """Create a GraphAPIClient instance from a configuration dictionary.
 
-        :param config: Dictionary containing SharePoint configuration
+        :param config: Dictionary containing Microsoft Graph API configuration
         :type config: dict
-        :return: SharePointClient instance
-        :rtype: SharePointClient
+        :return: GraphAPIClient instance
+        :rtype: GraphAPIClient
         """
         return cls(
             tenant_id=config["tenant_id"],
             client_id=config["client_id"],
             client_secret=config["client_secret"],
-            sharepoint_host=config["sharepoint_host"],
-            site_name=config["site_name"],
+            microsoft_host=config["microsoft_host"],
         )
 
     def _authenticate(self) -> str:
-        logger.info("Authenticating to SharePoint %s", self.sharepoint_host)
+        logger.info("Authenticating to Microsoft Graph API %s", self.microsoft_host)
 
         app = ConfidentialClientApplication(
             self.client_id,
@@ -109,12 +108,16 @@ class SharePointClient:
             else:
                 logger.error("Failed to download file %s: %S", file_name, response.text)
 
-    def search_file(self, remote_folder: str, expression: str) -> list[dict]:
+    def search_file(
+        self, site_name: str, remote_folder: str, expression: str
+    ) -> list[dict]:
         """Search for files in the `remote_folder` that contain the expression.
 
         This searches within the SharePoint folder for files whose names include the
         given expression.
 
+        :param site_name: The SharePoint site name
+        :type site_name: str
         :param remote_folder: The remote folder to search in
         :type remote_folder: str
         :param expression: The expression to search for in filenames
@@ -125,9 +128,7 @@ class SharePointClient:
         token = self._authenticate()
 
         headers = {"Authorization": f"Bearer {token}"}
-        site_url = (
-            f"{self.Constants.graph_url}{self.sharepoint_host}:/sites/{self.site_name}"
-        )
+        site_url = f"{self.Constants.graph_url}{self.microsoft_host}:/sites/{site_name}"
         site = requests.get(site_url, headers=headers, timeout=10).json()
         site_id = site["id"]
 
@@ -142,12 +143,19 @@ class SharePointClient:
             raise Exception(msg)
 
         files = response.json().get("value", [])
+        matched_files = [f for f in files if expression in f["name"]]
 
-        return [f for f in files if expression in f["name"]]
+        logger.info(
+            "Found %s files in the folder %s", len(matched_files), remote_folder
+        )
 
-    def download_file(self, file: dict, local_path: str) -> str:
+        return matched_files
+
+    def download_file(self, site_name: str, file: dict, local_path: str) -> str:
         """Download a specific file from SharePoint to a local path.
 
+        :param site_name: The SharePoint site name
+        :type site_name: str
         :param file: The file metadata dictionary containing 'id' and 'name'
         :type file: dict
         :param local_path: The local directory path to save the downloaded file
@@ -158,9 +166,7 @@ class SharePointClient:
         token = self._authenticate()
 
         headers = {"Authorization": f"Bearer {token}"}
-        site_url = (
-            f"{self.Constants.graph_url}{self.sharepoint_host}:/sites/{self.site_name}"
-        )
+        site_url = f"{self.Constants.graph_url}{self.microsoft_host}:/sites/{site_name}"
         site = requests.get(site_url, headers=headers, timeout=10).json()
         site_id = site["id"]
         file_id = file["id"]
@@ -182,10 +188,12 @@ class SharePointClient:
         return None
 
     def download_folder(
-        self, remote_folder: str, local_folder: str, local_path: str
+        self, site_name: str, remote_folder: str, local_folder: str, local_path: str
     ) -> None:
         """Download all files from a SharePoint folder to a local folder.
 
+        :param site_name: The SharePoint site name
+        :type site_name: str
         :param remote_folder: The remote SharePoint folder to download from
         :type remote_folder: str
         :param local_folder: The local folder name to save files into
@@ -196,9 +204,7 @@ class SharePointClient:
         token = self._authenticate()
 
         headers = {"Authorization": f"Bearer {token}"}
-        site_url = (
-            f"{self.Constants.graph_url}{self.sharepoint_host}:/sites/{self.site_name}"
-        )
+        site_url = f"{self.Constants.graph_url}{self.microsoft_host}:/sites/{site_name}"
         site = requests.get(site_url, headers=headers, timeout=10).json()
         site_id = site["id"]
 
@@ -220,7 +226,7 @@ class SharePointClient:
         self._create_folder(local_path)
         self._download_all(site_id, token, files, local_path)
 
-        logger.info("Download completed from SharePoint %s", self.sharepoint_host)
+        logger.info("Download completed from SharePoint %s", self.microsoft_host)
 
     def _upload_all(
         self,
@@ -266,11 +272,38 @@ class SharePointClient:
 
         headers = {"Authorization": f"Bearer {token}"}
         site_url = (
-            f"{self.Constants.graph_url}{self.sharepoint_host}:/sites/{self.site_name}"
+            f"{self.Constants.graph_url}{self.microsoft_host}:/sites/{self.site_name}"
         )
         site = requests.get(site_url, headers=headers, timeout=10).json()
         site_id = site["id"]
 
         self._upload_all(site_id, token, remote_folder, local_folder)
 
-        logger.info("Upload completed to SharePoint %s", self.sharepoint_host)
+        logger.info("Upload completed to SharePoint %s", self.microsoft_host)
+
+    def send_email(self, email: dict, sender: str) -> None:
+        """Send an email using Microsoft Graph API.
+
+        :param email: Dictionary containing email details such as 'subject',
+                      'body', 'to_recipients', and optional 'cc_recipients'
+        :type email: dict
+        """
+        token = self._authenticate()
+
+        endpoint = f"https://graph.microsoft.com/v1.0/users/{sender}/sendMail"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            json=email,
+            timeout=10,
+        )
+
+        if response.status_code == HTTPStatus.ACCEPTED:
+            logger.info("Email sent successfully via Graph API")
+        else:
+            msg = f"SendMail failed: {response.status_code} {response.text}"
+            raise RuntimeError(msg)
